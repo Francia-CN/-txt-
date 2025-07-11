@@ -1,28 +1,39 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 :: ============================================================================
-:: 多格式文档批量转换txt工具 v1.0 - 启动器
+:: 多格式文档批量转换txt工具 v1.0 - 启动器 
 :: ============================================================================
 
-:: --- 0. 编码兼容性处理 ---
-:: 切换代码页为UTF-8 (65001)，以正确显示脚本中的中文字符。
-:: >nul 用于隐藏 "Active code page: 65001" 的输出，保持界面整洁。
-chcp 65001 >nul
-
-:: --- 1. 配置变量 ---
-set "PYTHON_SCRIPT=run.py"
-set "DEFAULT_INPUT_DIR=input"
-set "DEFAULT_OUTPUT_DIR=output"
-set "CLEAN_FLAG="
-set "PYTHON_EXE="
-set "ORIGINAL_CODE_PAGE=%errorlevel%"
+:: --- 0. 调试模式检测 ---
+:: 如果在双击此脚本时按下了SHIFT键，则会进入调试模式。
+if defined SHIFT (
+    set "DEBUG_MODE=ON"
+    echo [调试模式] 已激活。脚本将分步执行。
+    pause
+) else (
+    set "DEBUG_MODE=OFF"
+)
 
 :: 清理屏幕，提供一个干净的界面
 cls
 
-title 多格式文档批量转换txt工具 v1.0
 
+:: --- 1. 编码兼容性处理 ---
+:: 切换代码页为UTF-8 (65001)，以正确显示脚本中的中文字符。
+title 多格式文档批量转换txt工具 v1.0
+where chcp >nul 2>nul
+if %errorlevel% == 0 (
+    chcp 65001 >nul
+)
+
+if "!DEBUG_MODE!"=="ON" (
+    echo [调试] 步骤 1: 编码设置完成。
+    pause
+)
+
+
+:: --- 2. 显示标题 ---
 echo.
 echo  ================================================================
 echo.
@@ -31,7 +42,14 @@ echo.
 echo  ================================================================
 echo.
 
-:: --- 2. 环境预检 ---
+
+:: --- 3. 配置与环境预检 ---
+set "PYTHON_SCRIPT=run.py"
+set "DEFAULT_INPUT_DIR=input"
+set "DEFAULT_OUTPUT_DIR=output"
+set "CLEAN_FLAG="
+set "PYTHON_EXE="
+
 echo [信息] 正在检查运行环境...
 
 :: 检查Python可执行文件 (优先python, 其次python3)
@@ -53,7 +71,6 @@ if not defined PYTHON_EXE (
     goto :error_exit
 )
 
-:: 检查核心的Python脚本文件是否存在
 if not exist "%~dp0%PYTHON_SCRIPT%" (
     echo [致命错误] 核心脚本 "%PYTHON_SCRIPT%" 不存在！
     echo.
@@ -63,7 +80,13 @@ if not exist "%~dp0%PYTHON_SCRIPT%" (
 echo [成功] 环境检查通过。
 echo.
 
-:: --- 3. 确定输入/输出路径 ---
+if "!DEBUG_MODE!"=="ON" (
+    echo [调试] 步骤 3: 环境检查完成。Python路径: !PYTHON_EXE!
+    pause
+)
+
+
+:: --- 4. 确定输入/输出路径 ---
 if "%~1"=="" (
     echo [模式] 双击运行模式。将使用默认的 input/output 文件夹。
     set "INPUT_DIR=%~dp0%DEFAULT_INPUT_DIR%"
@@ -86,10 +109,18 @@ if "%~1"=="" (
 )
 echo.
 
-:: --- 4. 交互式安全确认 (清空输出目录) ---
+if "!DEBUG_MODE!"=="ON" (
+    echo [调试] 步骤 4: 路径确定完成。
+    echo [调试] 输入: !INPUT_DIR!
+    echo [调试] 输出: !OUTPUT_DIR!
+    pause
+)
+
+
+:: --- 5. 交互式安全确认 (清空输出目录) ---
 if exist "%OUTPUT_DIR%\" (
-    echo [警告] 输出目录 "%OUTPUT_DIR%" 已存在。
-    choice /C YN /M "您想在转换前清空它吗？(Y/N): "
+    echo [警告] 输出目录 "!OUTPUT_DIR!" 已存在。
+    choice /C YN /N /M "您想在转换前清空它吗? [Y/N]:"
     
     if errorlevel 2 (
         echo [信息] 您选择了不清空。如果输出目录中存在同名.txt文件，它们将被覆盖。
@@ -100,31 +131,44 @@ if exist "%OUTPUT_DIR%\" (
 )
 echo.
 
-:: --- 5. 执行转换 ---
+if "!DEBUG_MODE!"=="ON" (
+    echo [调试] 步骤 5: 清理确认完成。清理标志: !CLEAN_FLAG!
+    pause
+)
+
+
+:: --- 6. 执行转换 ---
 echo ----------------------------------------------------------------
 echo [执行] 准备调用Python脚本开始转换...
 echo.
-echo   - 输入目录: "%INPUT_DIR%"
-echo   - 输出目录: "%OUTPUT_DIR%"
+echo   - 输入目录: "!INPUT_DIR!"
+echo   - 输出目录: "!OUTPUT_DIR!"
 echo.
 echo ----------------------------------------------------------------
 echo.
 
 :: 切换到Python脚本所在的目录，然后执行
 cd /d "%~dp0"
-%PYTHON_EXE% "%PYTHON_SCRIPT%" "%INPUT_DIR%" "%OUTPUT_DIR%" %CLEAN_FLAG%
+!PYTHON_EXE! "!PYTHON_SCRIPT!" "!INPUT_DIR!" "!OUTPUT_DIR!" !CLEAN_FLAG!
 
+if errorlevel 1 (
+	echo.
+	echo [致命错误] Python 脚本执行失败，返回了错误代码。
+	echo 请检查以上Python输出的错误信息。
+	goto :error_exit
+)
+
+
+:: --- 7. 完成并退出 ---
 echo.
 echo ----------------------------------------------------------------
 echo.
-
-:: --- 6. 完成并退出 ---
 echo [完成] 脚本执行完毕！
 echo.
-echo   结果已保存至: "%OUTPUT_DIR%"
+echo   结果已保存至: "!OUTPUT_DIR!"
 echo.
 echo   正在为您自动打开该文件夹...
-start "" "%OUTPUT_DIR%"
+start "" "!OUTPUT_DIR!"
 
 goto :graceful_exit
 
@@ -149,6 +193,4 @@ echo  ================================================================
 timeout /t 5 >nul
 
 :end
-:: 恢复原始代码页，这是一个好习惯
-chcp %ORIGINAL_CODE_PAGE% >nul
 endlocal
