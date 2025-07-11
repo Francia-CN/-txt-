@@ -66,7 +66,7 @@ except Exception:
     HAVE_CALIBRE = False
 
 # --- 3. 全局常量与配置 ---
-VERSION = "v1.1"
+VERSION = "v1.0"
 LOG_DIR_NAME = "logs"
 DEFAULT_TIMEOUT = 120  # 单个文件处理的默认超时时间（秒）
 
