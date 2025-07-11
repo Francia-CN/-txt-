@@ -71,7 +71,6 @@ LOG_DIR_NAME = "logs"
 DEFAULT_TIMEOUT = 120  # 单个文件处理的默认超时时间（秒）
 
 # EPUB 解析时需要移除的 HTML 标签列表。
-# 提示: 可通过修改此列表来自定义需要过滤的标签。
 EPUB_TAGS_TO_REMOVE = [
     "script", "style", "nav", "header", "footer", "meta", "link",
     "noscript", "svg", "figure", "figcaption", "a", "img", "aside"
@@ -95,20 +94,25 @@ class Color:
     BOLD = "\033[1m"
     CYAN = "\033[96m"
 
-def setup_logging(log_dir: Path) -> Path:
+def setup_logging(log_dir: Path, level: str) -> Path: # <--- 修改点 1: 增加 level 参数
     """配置日志系统，创建并返回日志文件路径。"""
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / f"conversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
-    # 清理已有处理器，避免在某些环境下（如Jupyter）重复记录
     logger = logging.getLogger()
     if logger.hasHandlers():
         logger.handlers.clear()
+    
+    # <--- 修改点 2: 设置全局日志级别为最低的DEBUG，以捕获所有信息 ---
     logger.setLevel(logging.DEBUG)
 
     # 创建文件处理器，用于写入日志文件
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
+    
+    # <--- 修改点 3: 根据用户传入的参数设置文件处理器的级别 ---
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    file_handler.setLevel(log_level)
+    
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] (%(processName)s) %(message)s")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
@@ -129,20 +133,12 @@ def format_size(size_bytes: float) -> str:
 # --- 6. 文件格式处理器 (策略模式实现) ---
 
 def handle_epub(src_path: Path) -> HandlerResult:
-    """
-    EPUB 文件处理器，具备对不规范XML的回退处理能力。
-    处理流程：
-    1. 通过 META-INF/container.xml 或直接搜索找到 .opf 配置文件。
-    2. 解析 .opf 文件，获取书籍元数据和内容文件（spine）的顺序。
-    3. 按顺序读取每个内容文件，使用 BeautifulSoup 清理HTML标签并提取纯文本。
-    """
+    """EPUB 文件处理器，具备对不规范XML的回退处理能力。"""
     warnings_list = []
     with zipfile.ZipFile(src_path, "r") as zf:
-        # 检查文件是否被加密
         if any(f.flag_bits & 0x1 for f in zf.infolist()):
             raise RuntimeError("文件已加密")
 
-        # 1. 定位OPF配置文件
         opf_path = ""
         try:
             container_xml = zf.read("META-INF/container.xml")
@@ -152,7 +148,6 @@ def handle_epub(src_path: Path) -> HandlerResult:
             if opf_path_results:
                 opf_path = opf_path_results[0]
         except (etree.ParseError, KeyError, zipfile.BadZipFile):
-            # 如果 container.xml 解析失败、不存在或损坏，则继续在压缩包中寻找.opf文件
             pass
 
         if not opf_path:
@@ -161,21 +156,17 @@ def handle_epub(src_path: Path) -> HandlerResult:
                 raise RuntimeError("在EPUB中找不到OPF配置文件 (.opf)")
             opf_path = opf_candidates[0]
         
-        # 2. 解析OPF，获取内容文件顺序
         opf_tree = etree.fromstring(zf.read(opf_path))
         ns_map = {k: v for k, v in opf_tree.nsmap.items() if k} or {'opf': 'http://www.idpf.org/2007/opf'}
         manifest = {item.get("id"): item.get("href") for item in opf_tree.xpath(".//opf:manifest/opf:item", namespaces=ns_map)}
         spine_idrefs = [item.get("idref") for item in opf_tree.xpath(".//opf:spine/opf:itemref", namespaces=ns_map)]
         opf_dir = Path(opf_path).parent
         
-        # 3. 提取并清理文本内容
         full_text_parts = []
         for idref in spine_idrefs:
             href = manifest.get(idref)
             if not href: continue
             
-            # 路径需要先进行URL解码，然后基于OPF文件所在目录进行解析。
-            # os.path.normpath 用于处理 '..' 等相对路径，.replace('\\', '/') 确保路径为zip格式。
             unquoted_href = urllib.parse.unquote(href)
             content_path_str = str(Path(opf_dir) / unquoted_href).replace("\\", "/")
             
@@ -183,11 +174,9 @@ def handle_epub(src_path: Path) -> HandlerResult:
                 try:
                     content_bytes = zf.read(content_path_str)
                     soup = None
-                    # 优先使用更严格的lxml-xml解析器
                     try:
                         soup = BeautifulSoup(content_bytes, "lxml-xml")
                     except etree.XMLSyntaxError:
-                        # 如果XML不规范，回退到容错性更强的lxml (HTML)解析器
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore", category=XMLParsedAsHTMLWarning)
                             msg = f"文件 '{content_path_str}' XML格式不规范，已回退到HTML解析器。"
@@ -195,7 +184,6 @@ def handle_epub(src_path: Path) -> HandlerResult:
                             logging.warning(f"[{src_path.name}] {msg}")
                             soup = BeautifulSoup(content_bytes, "lxml")
 
-                    # 移除不需要的标签并提取文本
                     for tag in soup.find_all(EPUB_TAGS_TO_REMOVE):
                         tag.decompose()
                     body = soup.find("body")
@@ -210,21 +198,18 @@ def handle_epub(src_path: Path) -> HandlerResult:
     return "\n\n".join(full_text_parts), warnings_list
 
 def handle_docx(src_path: Path) -> HandlerResult:
-    """DOCX 文件处理器，可提取段落、表格、页眉和页脚的文本。"""
+    """DOCX 文件处理器。"""
     doc = docx.Document(src_path)
     text_parts = []
     
-    # 提取所有分区的页眉和页脚文本
     for section in doc.sections:
         for part in (section.header, section.footer):
             for p in part.paragraphs:
                 if p.text.strip(): text_parts.append(p.text)
     
-    # 提取正文段落
     for p in doc.paragraphs:
         text_parts.append(p.text)
 
-    # 提取表格内容（按单元格）
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -233,14 +218,14 @@ def handle_docx(src_path: Path) -> HandlerResult:
     return "\n".join(filter(None, text_parts)), []
 
 def handle_pdf(src_path: Path) -> HandlerResult:
-    """PDF 文件处理器，使用 PyMuPDF 提取文本。"""
+    """PDF 文件处理器。"""
     with fitz.open(src_path) as doc:
         if doc.is_encrypted:
             raise RuntimeError("PDF文件已加密")
         return "".join(page.get_text() for page in doc), []
 
 def handle_mobi(src_path: Path) -> HandlerResult:
-    """MOBI/AZW3 文件处理器，依赖外部 Calibre 的 ebook-convert 命令行工具。"""
+    """MOBI/AZW3 文件处理器。"""
     if not HAVE_CALIBRE:
         raise RuntimeError("未找到 Calibre 的命令行工具 (ebook-convert)。")
 
@@ -249,19 +234,13 @@ def handle_mobi(src_path: Path) -> HandlerResult:
         command = ["ebook-convert", str(src_path), str(temp_txt_path)]
         
         try:
-            # 在Windows上，隐藏命令行窗口以获得更好的用户体验
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
 
             process = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',
-                creationflags=creation_flags
+                command, check=True, capture_output=True, text=True,
+                encoding='utf-8', errors='ignore', creationflags=creation_flags
             )
             
             if temp_txt_path.exists():
@@ -278,7 +257,7 @@ def handle_mobi(src_path: Path) -> HandlerResult:
             error_message = (e.stderr or e.stdout or "无详细输出").strip()
             if "DRM" in error_message:
                 raise RuntimeError("MOBI文件可能受DRM保护，Calibre 无法转换。")
-            raise RuntimeError(f"Calibre 转换失败。命令: `{' '.join(command)}`。错误: {error_message}")
+            raise RuntimeError(f"Calibre 转换失败。错误: {error_message}")
 
 
 # --- 7. 核心处理引擎 ---
@@ -291,12 +270,7 @@ if HAVE_CALIBRE:
     PROCESSOR_STRATEGIES['.azw3'] = handle_mobi
 
 def process_file(src_path: Path, rel_path: Path, output_dir: Path) -> ProcessResult:
-    """
-    统一的文件处理调度器。
-    - 根据文件后缀名选择合适的处理器（策略）。
-    - 如果没有对应的处理器，则直接将原文件复制到输出目录。
-    - 捕获所有异常并作为错误结果返回。
-    """
+    """统一的文件处理调度器。"""
     rel_path_str = str(rel_path)
     ext = src_path.suffix.lower()
     
@@ -307,7 +281,6 @@ def process_file(src_path: Path, rel_path: Path, output_dir: Path) -> ProcessRes
             
         processor = PROCESSOR_STRATEGIES.get(ext)
         if processor:
-            # 调用对应的处理函数进行转换
             text, warnings_list = processor(src_path)
             if not text or not text.strip():
                 raise ValueError("提取内容为空")
@@ -317,14 +290,12 @@ def process_file(src_path: Path, rel_path: Path, output_dir: Path) -> ProcessRes
             output_path.write_text(text, encoding='utf-8')
             return 'converted', rel_path_str, file_size, warnings_list
         else:
-            # 对于不支持转换的格式，直接复制文件
             dest_path = output_dir / rel_path
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_path, dest_path)
             return 'copied', rel_path_str, file_size, []
 
     except Exception as e:
-        # 捕获所有可能的异常，统一作为错误处理
         logging.error(f"处理文件 [{rel_path_str}] 时发生严重错误。", exc_info=True)
         return 'error', rel_path_str, 0, [str(e)]
 
@@ -334,7 +305,7 @@ def process_file(src_path: Path, rel_path: Path, output_dir: Path) -> ProcessRes
 def create_arg_parser() -> argparse.ArgumentParser:
     """创建并配置命令行参数解析器。"""
     parser = argparse.ArgumentParser(
-        description=f"多格式文档批量转换工具 ({VERSION})",
+        description=f"多格式文档批量转换工具 (版本 {VERSION})",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""
 使用示例:
@@ -344,8 +315,8 @@ def create_arg_parser() -> argparse.ArgumentParser:
   2. 指定目录，使用8个进程并强制清空输出目录:
      python %(prog)s ./my_books ./my_texts -t 8 --clean-output
 
-  3. 只转换PDF和EPUB文件，并排除所有图片:
-     python %(prog)s ./in ./out --include .pdf,.epub --exclude .jpg,.png
+  3. 只转换PDF和EPUB，并以最详细的模式记录日志:
+     python %(prog)s ./in ./out --include .pdf,.epub --log-level DEBUG
 """
     )
     parser.add_argument("input", nargs='?', default="input",
@@ -357,13 +328,17 @@ def create_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                         help=f"单个文件的最大处理时间(秒) (默认: {DEFAULT_TIMEOUT})")
     parser.add_argument("--clean-output", action="store_true",
-                        help="在开始前清空已存在的输出目录 (危险操作，请谨慎使用!)")
+                        help="在开始前清空已存在的输出目录 (危险操作!)")
     parser.add_argument("--include", type=str,
-                        help="只处理指定后缀的文件, 用逗号分隔 (例如: .epub,.pdf)")
+                        help="只处理指定后缀的文件, 用逗号分隔 (例: .epub,.pdf)")
     parser.add_argument("--exclude", type=str,
-                        help="排除指定后缀的文件, 用逗号分隔 (例如: .jpg,.png)")
+                        help="排除指定后缀的文件, 用逗号分隔 (例: .jpg,.png)")
     parser.add_argument("--no-color", action="store_true",
                         help="禁用所有彩色控制台输出")
+    # <--- 修改点 4: 增加 '--log-level' 命令行参数 ---
+    parser.add_argument("--log-level", type=str, default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="设置日志文件的记录级别 (默认: INFO)")
     return parser
 
 def print_summary(stats: Dict[str, Any], duration: float, log_file: Path, c: Color):
@@ -388,21 +363,20 @@ def main():
     """主执行函数，负责解析参数、调度任务和显示结果。"""
     args = create_arg_parser().parse_args()
     
-    # 根据是否支持彩色输出，决定是否使用Color类
     c = Color if not args.no_color and sys.stdout.isatty() else type("Color", (), {k: "" for k in Color.__dict__ if not k.startswith('__')})()
-    log_file = setup_logging(Path(__file__).parent / LOG_DIR_NAME)
+    
+    # <--- 修改点 5: 将用户指定的日志级别传递给 setup_logging 函数 ---
+    log_file = setup_logging(Path(__file__).parent / LOG_DIR_NAME, args.log_level)
     
     print(f"\n{c.HEADER}{'='*50}{c.ENDC}")
     print(f"{c.HEADER}    多格式文档批量转换工具 (版本 {VERSION})    {c.ENDC}")
     print(f"{c.HEADER}{'='*50}{c.ENDC}\n")
 
-    # 检查核心依赖
     if not HAVE_LXML_BS4:
         print(f"{c.FAIL}致命错误: 核心依赖 'lxml', 'beautifulsoup4' 或 'tqdm' 未安装。\n"
               f"请运行 'pip install lxml beautifulsoup4 tqdm' 后重试。{c.ENDC}")
         sys.exit(1)
 
-    # 提示可选依赖的安装状态
     if not PROCESSOR_STRATEGIES:
         print(f"{c.FAIL}致命错误: 未安装任何格式处理器的依赖库 (如 python-docx, PyMuPDF)。\n"
               f"请根据需要安装，例如 'pip install python-docx PyMuPDF'。{c.ENDC}")
@@ -416,18 +390,15 @@ def main():
                 lib_map = {'.docx': 'python-docx', '.pdf': 'PyMuPDF'}
                 print(f"{c.WARNING}提示: 未安装 '{lib_map.get(ext)}'，将无法转换 {ext} 文件。{c.ENDC}")
 
-    # 初始化目录和文件列表
     input_dir, output_dir = Path(args.input), Path(args.output)
     stats = defaultdict(int)
     
     try:
-        # 准备输入目录
         if not input_dir.is_dir():
             input_dir.mkdir(exist_ok=True)
             print(f"{c.OKBLUE}输入目录 '{input_dir}' 不存在，已自动创建。请放入文件后重新运行。{c.ENDC}")
             sys.exit(0)
             
-        # 安全地处理输出目录
         if output_dir.exists():
             if args.clean_output:
                 print(f"{c.WARNING}警告: 用户指定了 --clean-output，正在清空输出目录 '{output_dir}'...{c.ENDC}")
@@ -438,7 +409,6 @@ def main():
                 sys.exit(1)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 扫描并根据参数过滤文件
         all_files = [f for f in input_dir.rglob("*") if f.is_file()]
         if args.include:
             included = tuple(e.strip().lower() for e in args.include.split(','))
@@ -456,7 +426,6 @@ def main():
         print(f"{c.OKBLUE}在输入目录 '{input_dir}' 中未找到任何符合条件的文件。{c.ENDC}")
         sys.exit(0)
     
-    # 创建任务队列，并开始多进程处理
     file_queue = [(f, f.relative_to(input_dir)) for f in all_files]
     num_workers = min(args.threads, len(file_queue))
     print(f"发现 {len(file_queue)} 个待处理文件，使用 {num_workers} 个进程开始转换...\n")
@@ -487,9 +456,8 @@ def main():
                     logging.info(f"[{rel_path}] 跳过: {messages[0]}")
                 elif status == 'error':
                     stats['errors'] += 1
-                    error_msg_short = messages[0].splitlines()[0] # 只显示第一行错误信息，避免刷屏
+                    error_msg_short = messages[0].splitlines()[0]
                     tqdm.write(f"{c.FAIL}[出错了] {rel_path}: {error_msg_short}{c.ENDC}")
-                    # 完整的错误信息已在 process_file 中记录到日志
             
             except concurrent.futures.TimeoutError:
                 stats['timeouts'] += 1
