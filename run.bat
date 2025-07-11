@@ -5,12 +5,18 @@ setlocal
 :: 多格式文档批量转换txt工具 v1.0 - 启动器
 :: ============================================================================
 
+:: --- 0. 编码兼容性处理 ---
+:: 切换代码页为UTF-8 (65001)，以正确显示脚本中的中文字符。
+:: >nul 用于隐藏 "Active code page: 65001" 的输出，保持界面整洁。
+chcp 65001 >nul
+
 :: --- 1. 配置变量 ---
 set "PYTHON_SCRIPT=run.py"
 set "DEFAULT_INPUT_DIR=input"
 set "DEFAULT_OUTPUT_DIR=output"
 set "CLEAN_FLAG="
 set "PYTHON_EXE="
+set "ORIGINAL_CODE_PAGE=%errorlevel%"
 
 :: 清理屏幕，提供一个干净的界面
 cls
@@ -143,4 +149,6 @@ echo  ================================================================
 timeout /t 5 >nul
 
 :end
+:: 恢复原始代码页，这是一个好习惯
+chcp %ORIGINAL_CODE_PAGE% >nul
 endlocal
