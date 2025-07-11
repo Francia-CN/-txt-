@@ -1,0 +1,8 @@
+# 核心依赖 (脚本运行所必需)
+beautifulsoup4>=4.12.0  # 用于解析文件内的HTML/XML内容
+lxml>=4.9.0            # 高性能XML/HTML解析器，被BeautifulSoup使用
+tqdm>=4.60.0           # 用于显示美观的进度条
+
+# 可选的格式支持库 (根据需要安装)
+python-docx>=1.1.0     # 用于转换 .docx 文件
+PyMuPDF>=1.23.0        # 用于转换 .pdf 文件 (在代码中以 'fitz' 导入)
